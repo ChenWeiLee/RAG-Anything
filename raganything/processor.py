@@ -790,7 +790,12 @@ class ProcessorMixin:
             existing_chunks_count = (
                 existing_doc_status.get("chunks_count", 0) if existing_doc_status else 0
             )
-        except Exception:
+        except Exception as e:
+            self.logger.warning(
+                "Could not retrieve existing doc status for %s, defaulting chunks_count to 0: %s",
+                doc_id,
+                e,
+            )
             existing_chunks_count = 0
 
         # Use LightRAG's concurrency control
@@ -1558,6 +1563,10 @@ class ProcessorMixin:
                     file_path, output_dir, parse_method, display_stats, **kwargs
                 )
             else:
+                if not isinstance(parsed_content_list, list) or not parsed_content_list:
+                    raise ValueError(
+                        f"parsed_content_list must be a non-empty list, got {type(parsed_content_list)}"
+                    )
                 content_list = parsed_content_list
                 content_based_doc_id = (
                     parsed_doc_id

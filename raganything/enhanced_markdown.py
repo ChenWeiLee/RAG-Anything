@@ -420,22 +420,9 @@ class EnhancedMarkdownConverter:
             raise FileNotFoundError(f"Input file not found: {input_path}")
 
         # Read markdown content
-        try:
-            with open(input_path_obj, "r", encoding="utf-8") as f:
-                markdown_content = f.read()
-        except UnicodeDecodeError:
-            # Try with different encodings
-            for encoding in ["gbk", "latin-1", "cp1252"]:
-                try:
-                    with open(input_path_obj, "r", encoding=encoding) as f:
-                        markdown_content = f.read()
-                    break
-                except UnicodeDecodeError:
-                    continue
-            else:
-                raise RuntimeError(
-                    f"Could not decode file {input_path} with any supported encoding"
-                )
+        from raganything.utils import read_file_with_encoding_fallback
+
+        markdown_content = read_file_with_encoding_fallback(input_path_obj)
 
         # Determine output path
         if output_path is None:

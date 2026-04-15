@@ -558,7 +558,6 @@ class BaseModalProcessor:
         This helper strips those blocks so that only the final answer text is
         stored or surfaced to callers.
         """
-        import re
 
         cleaned = re.sub(
             r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE
@@ -597,8 +596,6 @@ class BaseModalProcessor:
     def _extract_all_json_candidates(self, response: str) -> list:
         """Extract all possible JSON candidates from response"""
         candidates = []
-
-        import re
 
         # Pre-process: Remove thinking/reasoning tags that some models use
         # This handles models like qwen2.5-think, deepseek-r1 that wrap reasoning in tags

@@ -100,7 +100,6 @@ class BatchMixin:
 
         # Process files with controlled concurrency
         semaphore = asyncio.Semaphore(max_workers)
-        tasks = []
 
         async def process_single_file(file_path: Path):
             async with semaphore:
@@ -136,13 +135,17 @@ class BatchMixin:
                     self.logger.error(f"Failed to process {file_path}: {str(e)}")
                     return False, str(file_path), str(e)
 
-        # Create tasks for all files
-        for file_path in files_to_process:
-            task = asyncio.create_task(process_single_file(file_path))
-            tasks.append(task)
-
-        # Wait for all tasks to complete
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Process files in bounded chunks to avoid memory explosion with large folders
+        chunk_size = max_workers * 2
+        results = []
+        for i in range(0, len(files_to_process), chunk_size):
+            chunk = files_to_process[i : i + chunk_size]
+            chunk_tasks = [
+                asyncio.create_task(process_single_file(f)) for f in chunk
+            ]
+            results.extend(
+                await asyncio.gather(*chunk_tasks, return_exceptions=True)
+            )
 
         # Process results
         successful_files = []

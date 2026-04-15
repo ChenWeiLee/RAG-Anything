@@ -29,6 +29,7 @@ import hashlib
 import json
 import argparse
 import base64
+import platform
 import subprocess
 import tempfile
 import logging
@@ -99,6 +100,41 @@ class Parser:
         path_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:8]
         return Path(base_dir) / f"{stem}_{path_hash}"
 
+    @staticmethod
+    def _subprocess_kwargs(
+        *,
+        capture_output: bool = True,
+        check: bool = False,
+        env: dict | None = None,
+        timeout: int | None = None,
+        bufsize: int = -1,
+    ) -> dict:
+        """Build common subprocess keyword arguments.
+
+        Centralises the Windows ``CREATE_NO_WINDOW`` flag and encoding defaults
+        that were previously duplicated across every subprocess call site.
+        """
+        kwargs: dict[str, Any] = {
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "ignore",
+        }
+        if capture_output:
+            kwargs["capture_output"] = True
+        else:
+            kwargs["stdout"] = subprocess.PIPE
+            kwargs["stderr"] = subprocess.PIPE
+            kwargs["bufsize"] = bufsize
+        if check:
+            kwargs["check"] = True
+        if env is not None:
+            kwargs["env"] = env
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if platform.system() == "Windows":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        return kwargs
+
     @classmethod
     def convert_office_to_pdf(
         cls, doc_path: Union[str, Path], output_dir: Optional[str] = None
@@ -139,9 +175,6 @@ class Parser:
                     f"Converting {doc_path.name} to PDF using LibreOffice..."
                 )
 
-                # Prepare subprocess parameters to hide console window on Windows
-                import platform
-
                 # Try LibreOffice commands in order of preference
                 commands_to_try = ["libreoffice", "soffice"]
 
@@ -160,20 +193,9 @@ class Parser:
                             str(doc_path),
                         ]
 
-                        # Prepare conversion subprocess parameters
-                        convert_subprocess_kwargs = {
-                            "capture_output": True,
-                            "text": True,
-                            "timeout": 60,  # 60 second timeout
-                            "encoding": "utf-8",
-                            "errors": "ignore",
-                        }
-
-                        # Hide console window on Windows
-                        if platform.system() == "Windows":
-                            convert_subprocess_kwargs["creationflags"] = (
-                                subprocess.CREATE_NO_WINDOW
-                            )
+                        convert_subprocess_kwargs = cls._subprocess_kwargs(
+                            timeout=60,
+                        )
 
                         result = subprocess.run(
                             convert_cmd, **convert_subprocess_kwargs
@@ -276,25 +298,9 @@ class Parser:
                 raise ValueError(f"Unsupported text format: {text_path.suffix}")
 
             # Read the text content
-            try:
-                with open(text_path, "r", encoding="utf-8") as f:
-                    text_content = f.read()
-            except UnicodeDecodeError:
-                # Try with different encodings
-                for encoding in ["gbk", "latin-1", "cp1252"]:
-                    try:
-                        with open(text_path, "r", encoding=encoding) as f:
-                            text_content = f.read()
-                        cls.logger.info(
-                            f"Successfully read file with {encoding} encoding"
-                        )
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                else:
-                    raise RuntimeError(
-                        f"Could not decode text file {text_path.name} with any supported encoding"
-                    )
+            from raganything.utils import read_file_with_encoding_fallback
+
+            text_content = read_file_with_encoding_fallback(text_path)
 
             # Prepare output directory
             if output_dir:
@@ -709,8 +715,6 @@ class MineruParser(Parser):
             )
 
         try:
-            # Prepare subprocess parameters to hide console window on Windows
-            import platform
             import threading
             from queue import Queue, Empty
 
@@ -722,19 +726,9 @@ class MineruParser(Parser):
                 env = os.environ.copy()
                 env.update(custom_env)
 
-            subprocess_kwargs = {
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.PIPE,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "ignore",
-                "bufsize": 1,  # Line buffered
-                "env": env,
-            }
-
-            # Hide console window on Windows
-            if platform.system() == "Windows":
-                subprocess_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            subprocess_kwargs = cls._subprocess_kwargs(
+                capture_output=False, env=env, bufsize=1,
+            )
 
             # Function to read output from subprocess and add to queue
             def enqueue_output(pipe, queue, prefix):
@@ -1322,21 +1316,7 @@ class MineruParser(Parser):
             bool: True if installation is valid, False otherwise
         """
         try:
-            # Prepare subprocess parameters to hide console window on Windows
-            import platform
-
-            subprocess_kwargs = {
-                "capture_output": True,
-                "text": True,
-                "check": True,
-                "encoding": "utf-8",
-                "errors": "ignore",
-            }
-
-            # Hide console window on Windows
-            if platform.system() == "Windows":
-                subprocess_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
+            subprocess_kwargs = self._subprocess_kwargs(check=True)
             result = subprocess.run(["mineru", "--version"], **subprocess_kwargs)
             self.logger.debug(f"MinerU version: {result.stdout.strip()}")
             return True
@@ -1507,26 +1487,14 @@ class DoclingParser(Parser):
                     raise TypeError("env keys and values must be strings")
 
         try:
-            # Prepare subprocess parameters to hide console window on Windows
-            import platform
-
             env = None
             if custom_env:
                 env = os.environ.copy()
                 env.update(custom_env)
 
-            docling_subprocess_kwargs = {
-                "capture_output": True,
-                "text": True,
-                "check": True,
-                "encoding": "utf-8",
-                "errors": "ignore",
-                "env": env,
-            }
-
-            # Hide console window on Windows
-            if platform.system() == "Windows":
-                docling_subprocess_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            docling_subprocess_kwargs = self._subprocess_kwargs(
+                check=True, env=env,
+            )
 
             result = subprocess.run(cmd, **docling_subprocess_kwargs)
             self.logger.info("Docling command executed successfully")
@@ -1816,21 +1784,7 @@ class DoclingParser(Parser):
             bool: True if installation is valid, False otherwise
         """
         try:
-            # Prepare subprocess parameters to hide console window on Windows
-            import platform
-
-            subprocess_kwargs = {
-                "capture_output": True,
-                "text": True,
-                "check": True,
-                "encoding": "utf-8",
-                "errors": "ignore",
-            }
-
-            # Hide console window on Windows
-            if platform.system() == "Windows":
-                subprocess_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
+            subprocess_kwargs = self._subprocess_kwargs(check=True)
             result = subprocess.run(["docling", "--version"], **subprocess_kwargs)
             self.logger.debug(f"Docling version: {result.stdout.strip()}")
             return True

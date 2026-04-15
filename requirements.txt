@@ -1,6 +1,6 @@
 huggingface_hub
 # LightRAG packages
-lightrag-hku
+lightrag-hku<2
 # MinerU 2.0 packages (replaces magic-pdf)
 mineru[core]
 # Progress bars for batch processing
