@@ -115,7 +115,7 @@ class RAGAnything(QueryMixin, ProcessorMixin, BatchMixin):
         self.logger = logger
 
         # Set up document parser
-        self.doc_parser = get_parser(self.config.parser)
+        self._sync_doc_parser(force=True)
 
         # Register close method for cleanup
         atexit.register(self.close)
@@ -136,6 +136,20 @@ class RAGAnything(QueryMixin, ProcessorMixin, BatchMixin):
             f"Equation: {self.config.enable_equation_processing}"
         )
         self.logger.info(f"  Max concurrent files: {self.config.max_concurrent_files}")
+
+    def _sync_doc_parser(self, force: bool = False):
+        """Synchronize the parser instance with the configured parser name."""
+        current_parser_name = getattr(self, "_doc_parser_name", None)
+        desired_parser_name = self.config.parser
+
+        current_parser = getattr(self, "doc_parser", None)
+
+        if force or current_parser is None or current_parser_name != desired_parser_name:
+            self.doc_parser = get_parser(desired_parser_name)
+            self._doc_parser_name = desired_parser_name
+            # Changing parser requires re-checking installation for the new backend.
+            self._parser_installation_checked = False
+            self.logger.info(f"Using document parser backend: {desired_parser_name}")
 
     def close(self):
         """Cleanup resources when object is destroyed.
@@ -245,16 +259,23 @@ class RAGAnything(QueryMixin, ProcessorMixin, BatchMixin):
 
     def update_config(self, **kwargs):
         """Update configuration with new values"""
+        parser_changed = False
         for key, value in kwargs.items():
             if hasattr(self.config, key):
                 setattr(self.config, key, value)
                 self.logger.debug(f"Updated config: {key} = {value}")
+                if key == "parser":
+                    parser_changed = True
             else:
                 self.logger.warning(f"Unknown config parameter: {key}")
+
+        if parser_changed:
+            self._sync_doc_parser(force=True)
 
     async def _ensure_lightrag_initialized(self):
         """Ensure LightRAG instance is initialized, create if necessary"""
         try:
+            self._sync_doc_parser()
             # Check parser installation first
             if not self._parser_installation_checked:
                 if not self.doc_parser.check_installation():
@@ -423,7 +444,7 @@ class RAGAnything(QueryMixin, ProcessorMixin, BatchMixin):
                 self.logger.debug("Scheduled parse cache finalization")
 
             # Finalize LightRAG storages if LightRAG is initialized
-            if self.lightrag is not None:
+            if self.lightrag is not None and hasattr(self.lightrag, "finalize_storages"):
                 tasks.append(self.lightrag.finalize_storages())
                 self.logger.debug("Scheduled LightRAG storages finalization")
 

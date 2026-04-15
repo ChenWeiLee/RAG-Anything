@@ -351,6 +351,8 @@ class ProcessorMixin:
         ext = file_path.suffix.lower()
 
         try:
+            if hasattr(self, "_sync_doc_parser"):
+                self._sync_doc_parser()
             doc_parser = getattr(self, "doc_parser", None)
             if doc_parser is None:
                 doc_parser = get_parser(self.config.parser)
@@ -1515,6 +1517,8 @@ class ProcessorMixin:
         split_by_character_only: bool = False,
         doc_id: str | None = None,
         file_name: str | None = None,
+        parsed_content_list: List[Dict[str, Any]] | None = None,
+        parsed_doc_id: str | None = None,
         **kwargs,
     ):
         """
@@ -1548,10 +1552,21 @@ class ProcessorMixin:
 
             self.logger.info(f"Starting complete document processing: {file_path}")
 
-            # Step 1: Parse document
-            content_list, content_based_doc_id = await self.parse_document(
-                file_path, output_dir, parse_method, display_stats, **kwargs
-            )
+            # Step 1: Parse document, or reuse caller-provided parse results.
+            if parsed_content_list is None:
+                content_list, content_based_doc_id = await self.parse_document(
+                    file_path, output_dir, parse_method, display_stats, **kwargs
+                )
+            else:
+                content_list = parsed_content_list
+                content_based_doc_id = (
+                    parsed_doc_id
+                    if parsed_doc_id is not None
+                    else self._generate_content_based_doc_id(parsed_content_list)
+                )
+                self.logger.info(
+                    f"Using caller-provided parsed content for: {file_path}"
+                )
 
             # Use provided doc_id or fall back to content-based doc_id
             if doc_id is None:
@@ -1673,21 +1688,30 @@ class ProcessorMixin:
         pipeline_status_lock = None
 
         if parser:
-            self.config.parser = parser
+            self.update_config(parser=parser)
 
-        current_doc_status = await self.lightrag.doc_status.get_by_id(doc_pre_id)
+        current_doc_status = None
 
         try:
             # Ensure LightRAG is initialized
             result = await self._ensure_lightrag_initialized()
             if not result["success"]:
+                if self.lightrag is None:
+                    self.logger.error(
+                        "LightRAG initialization failed before doc status storage became available: "
+                        f"{result['error']}"
+                    )
+                    return False
+                failed_status = {
+                    "status": DocStatus.FAILED,
+                    "error_msg": result["error"],
+                    "file_path": file_name,
+                }
+                if current_doc_status:
+                    failed_status = {**current_doc_status, **failed_status}
                 await self.lightrag.doc_status.upsert(
                     {
-                        doc_pre_id: {
-                            **current_doc_status,
-                            "status": DocStatus.FAILED,
-                            "error_msg": result["error"],
-                        }
+                        doc_pre_id: failed_status
                     }
                 )
                 return False
@@ -1855,15 +1879,18 @@ class ProcessorMixin:
             return False
 
         finally:
-            async with pipeline_status_lock:
-                pipeline_status.update({"scan_disabled": False})
-                pipeline_status["latest_message"] = (
-                    f"RAGAnything processing completed for {file_name}"
-                )
-                pipeline_status["history_messages"].append(
-                    f"RAGAnything processing completed for {file_name}"
-                )
-                pipeline_status["history_messages"].append("Now is allowed to scan")
+            if pipeline_status_lock and pipeline_status:
+                async with pipeline_status_lock:
+                    pipeline_status.update({"scan_disabled": False})
+                    pipeline_status["latest_message"] = (
+                        f"RAGAnything processing completed for {file_name}"
+                    )
+                    pipeline_status["history_messages"].append(
+                        f"RAGAnything processing completed for {file_name}"
+                    )
+                    pipeline_status["history_messages"].append(
+                        "Now is allowed to scan"
+                    )
 
     async def insert_content_list(
         self,

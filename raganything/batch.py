@@ -350,22 +350,51 @@ class BatchMixin:
 
         self.logger.info("Starting batch processing with RAG integration")
 
-        # Step 1: Parse documents in batch
-        parse_result = self.process_documents_batch(
-            file_paths=file_paths,
-            output_dir=output_dir,
-            parse_method=parse_method,
+        # Step 1: Resolve supported files up front so each file is parsed only once.
+        batch_parser = BatchParser(
+            parser_type=self.config.parser,
             max_workers=max_workers,
-            recursive=recursive,
             show_progress=show_progress,
-            **kwargs,
+            skip_installation_check=True,
         )
+        supported_files = batch_parser.filter_supported_files(file_paths, recursive)
+
+        parse_successful_files = []
+        parse_failed_files = []
+        parse_errors = {}
+        parsed_documents = {}
 
         # Step 2: Process with RAG
         # Initialize RAG system
         await self._ensure_lightrag_initialized()
 
-        # Then, process each successful file with RAG
+        for file_path in supported_files:
+            try:
+                content_list, parsed_doc_id = await self.parse_document(
+                    file_path=file_path,
+                    output_dir=output_dir,
+                    parse_method=parse_method,
+                    display_stats=False,
+                    **kwargs,
+                )
+                parsed_documents[file_path] = (content_list, parsed_doc_id)
+                parse_successful_files.append(file_path)
+            except Exception as e:
+                self.logger.error(f"Failed to parse {file_path}: {str(e)}")
+                parse_failed_files.append(file_path)
+                parse_errors[file_path] = str(e)
+
+        parse_result = BatchProcessingResult(
+            successful_files=parse_successful_files,
+            failed_files=parse_failed_files,
+            total_files=len(supported_files),
+            processing_time=time.time() - start_time,
+            errors=parse_errors,
+            output_dir=output_dir,
+            dry_run=False,
+        )
+
+        # Then, process each successfully parsed file with RAG using the cached parse result
         rag_results = {}
 
         if parse_result.successful_files:
@@ -373,14 +402,16 @@ class BatchMixin:
                 f"Processing {len(parse_result.successful_files)} files with RAG"
             )
 
-            # Process files with RAG (this could be parallelized in the future)
             for file_path in parse_result.successful_files:
                 try:
-                    # Process the successfully parsed file with RAG
+                    content_list, parsed_doc_id = parsed_documents[file_path]
                     await self.process_document_complete(
                         file_path,
                         output_dir=output_dir,
                         parse_method=parse_method,
+                        display_stats=False,
+                        parsed_content_list=content_list,
+                        parsed_doc_id=parsed_doc_id,
                         **kwargs,
                     )
 

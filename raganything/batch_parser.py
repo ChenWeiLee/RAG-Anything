@@ -7,7 +7,8 @@ with progress reporting and error handling.
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import functools
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -287,21 +288,44 @@ class BatchParser:
                     ): file_path
                     for file_path in supported_files
                 }
+                start_times = {future: time.time() for future in future_to_file}
+                pending = set(future_to_file)
 
-                # Process completed tasks
-                for future in as_completed(
-                    future_to_file, timeout=self.timeout_per_file
-                ):
-                    success, file_path, error_msg = future.result()
+                # Process completed tasks while enforcing a timeout per file.
+                while pending:
+                    done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
 
-                    if success:
-                        successful_files.append(file_path)
-                    else:
+                    for future in done:
+                        success, file_path, error_msg = future.result()
+
+                        if success:
+                            successful_files.append(file_path)
+                        else:
+                            failed_files.append(file_path)
+                            errors[file_path] = error_msg
+
+                        if pbar:
+                            pbar.update(1)
+
+                    if not pending:
+                        break
+
+                    now = time.time()
+                    timed_out = {
+                        future
+                        for future in pending
+                        if now - start_times[future] > self.timeout_per_file
+                    }
+                    for future in timed_out:
+                        file_path = future_to_file[future]
+                        future.cancel()
                         failed_files.append(file_path)
-                        errors[file_path] = error_msg
-
-                    if pbar:
-                        pbar.update(1)
+                        errors[file_path] = (
+                            f"Timed out after {self.timeout_per_file} seconds"
+                        )
+                        pending.remove(future)
+                        if pbar:
+                            pbar.update(1)
 
         except Exception as e:
             self.logger.error(f"Batch processing failed: {str(e)}")
@@ -361,16 +385,16 @@ class BatchParser:
         """
         # Run the sync version in a thread pool
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
+        batch_call = functools.partial(
             self.process_batch,
-            file_paths,
-            output_dir,
-            parse_method,
-            recursive,
-            dry_run,
+            file_paths=file_paths,
+            output_dir=output_dir,
+            parse_method=parse_method,
+            recursive=recursive,
+            dry_run=dry_run,
             **kwargs,
         )
+        return await loop.run_in_executor(None, batch_call)
 
 
 def main():
